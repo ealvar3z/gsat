@@ -1,4 +1,5 @@
-{ pkgs ? (
+{
+  pkgs ? (
     let
       inherit (builtins) fetchTree fromJSON readFile;
       inherit ((fromJSON (readFile ./flake.lock)).nodes) nixpkgs gomod2nix;
@@ -8,12 +9,12 @@
         (import "${fetchTree gomod2nix.locked}/overlay.nix")
       ];
     }
-  )
-, buildGoApplication ? pkgs.buildGoApplication
+  ),
+  buildGoApplication ? pkgs.buildGoApplication,
 }:
 
 buildGoApplication {
-  pname = "myapp";
+  pname = "gsat";
   version = "0.1";
   pwd = ./.;
   src = ./.;

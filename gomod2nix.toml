@@ -1,3 +1,6 @@
-schema = 1
+schema = 3
 
 [mod]
+  [mod."gobytes.dev/swayipc"]
+    version = "v0.0.0-20231109133834-244c14b18a41"
+    hash = "sha256-GYwVxpzWhvIl5LekNmPGaVhIeq4tZe2/HSaWLyzwYNk="
