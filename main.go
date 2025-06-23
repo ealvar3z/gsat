@@ -8,14 +8,20 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"syscall"
 
 	"gobytes.dev/swayipc"
 )
 
+type focusState struct {
+	mu        sync.Mutex
+	last, cur int64
+}
+
 func main() {
-	combo := flag.String("combo", "Mod1+Tab", "key combo for alt+tab")
+	combo := flag.String("c", "Mod1+Tab", "key combo for alt+tab")
 	flag.Parse()
 
 	dir := os.Getenv("XDG_RUNTIME_DIR")
@@ -35,19 +41,29 @@ func main() {
 	if err != nil {
 		log.Fatalf("get tree %v", err)
 	}
-	curFocus, _ := findFocused(tree)
-	var lastFocus int64
-	mu := sync.Mutex{}
+	curID, _ := findFocused(tree)
+	fs := &focusState{cur: curID, last: curID}
 
 	// write pid
 	pid := os.Getpid()
-	if err := os.WriteFile(pidFile, []byte(fmt.Sprint(pid)), 0644); err != nil {
+	pidBytes := strconv.AppendInt(nil, int64(pid), 10)
+	if err := os.WriteFile(pidFile, pidBytes, 0644); err != nil {
 		log.Fatalf("write pidfile: %v", err)
 	}
 
 	// bind
-	cmd := fmt.Sprintf("bindsym %s exec pkill -USR1 -F %s", *combo, pidFile)
-	conn.RunCommand(cmd)
+	bind := "bindsym " + *combo + " exec pkill -USR1 -F " + pidFile
+	if _, err := conn.RunCommand(bind); err != nil {
+		log.Fatalf("failed to bind key: %v", err)
+	}
+
+	if _, err := conn.Subscribe(swayipc.WindowEventType); err != nil {
+		log.Fatalf("subscription to window event failed: %v", err)
+	}
+
+	conn.RegisterEventHandler(swayipc.HandlerFunc(func(e swayipc.Event) {
+		handleEvent(e, fs)
+	}))
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGUSR1, syscall.SIGINT, syscall.SIGTERM)
@@ -55,10 +71,13 @@ func main() {
 		for s := range sigs {
 			switch s {
 			case syscall.SIGUSR1:
-				mu.Lock()
-				lf := lastFocus
-				mu.Unlock()
-				conn.RunCommand(fmt.Sprintf("[con_id=%d] focus", lf))
+				fs.mu.Lock()
+				target := fs.last
+				fs.mu.Unlock()
+				cmd := "[con_id]" + strconv.FormatInt(target, 10) + "] focus"
+				if _, err := conn.RunCommand(cmd); err != nil {
+					log.Printf("focus command failed: %v", err)
+				}
 			case syscall.SIGINT, syscall.SIGTERM:
 				cleanup(conn, *combo, pidFile)
 				os.Exit(0)
@@ -66,20 +85,12 @@ func main() {
 		}
 	}()
 
-	if _, err := conn.Subscribe(swayipc.WindowEventType); err != nil {
-		log.Fatalf("subscription to window event failed: %v", err)
-	}
-
-	conn.RegisterEventHandler(swayipc.HandlerFunc(func(e swayipc.Event) {
-		handler(e, &mu, &lastFocus, &curFocus)
-	}))
-
 	// block indefinitely
 	select {}
 }
 
-// handler process sway events, focusing back & forth on the last window
-func handler(e swayipc.Event, mu *sync.Mutex, lastFocus, curFocus *int64) {
+// handleEvent process sway events, focusing back & forth on the last window
+func handleEvent(e swayipc.Event, fs *focusState) {
 	if e.EventType() != swayipc.WindowEventType {
 		return
 	}
@@ -87,10 +98,10 @@ func handler(e swayipc.Event, mu *sync.Mutex, lastFocus, curFocus *int64) {
 	if !ok || we.Change != "focus" {
 		return
 	}
-	mu.Lock()
-	*lastFocus = *curFocus
-	mu.Unlock()
-	*curFocus = int64(we.Container.Id)
+	fs.mu.Lock()
+	fs.last = fs.cur
+	fs.mu.Unlock()
+	fs.cur = int64(we.Container.Id)
 }
 
 // cleanup unbinds the key and removes the pid file
